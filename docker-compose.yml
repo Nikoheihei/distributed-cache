@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  node1:
+    build: .
+    container_name: gopher_node1
+    environment:
+      - IN_DOCKER=true
+    command: [ "-port=8001", "-api=true", "-db=data/common.db" ]
+    volumes:
+        - ./data:/app/data
+    ports:
+      - "9999:9999"
+      - "8001:8001"
+    networks:
+      - gopher_net
+    depends_on:
+      - node2
+
+  node2:
+    build: .
+    container_name: gopher_node2
+    environment:
+      - IN_DOCKER=true
+    command: [ "-port=8002", "-db=data/common.db" ]
+    volumes:
+        - ./data:/app/data # 挂载同一个目录
+    ports:
+      - "8002:8002"
+    networks:
+      - gopher_net
+
+networks:
+  gopher_net:
+    driver: bridge

@@ -1,0 +1,21 @@
+syntax="proto3";
+
+package geecachepb;
+
+option go_package = "GopherStore/geecache/geecachepb";
+
+//用了 protobuf 定义消息”，但“没有用 protobuf/gRPC 来承载 RPC 调用”。
+message Request{
+  string group=1;//这个1是字段编号，标识字段是谁
+  string key=2;
+}
+
+message Response{
+  bytes value=1;
+}
+
+//描述了RPC契约
+//缓存节点对外提供了一个Get接口，你给我group，我回你缓存值
+service GroupCache{
+  rpc Get(Request) returns(Response);
+}
