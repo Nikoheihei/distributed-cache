@@ -4,7 +4,7 @@
 
 ## v2 新增功能
 
-- MySQL 方言与独立数据库容器（V4 形态）
+- MySQL 方言与独立数据库容器
 - 运行期与初始化分离（MySQL 走 `db/init.sql`，sqlite 使用初始化脚本）
 - 可观测性：Prometheus 指标 + Grafana 仪表盘自动导入
 - 多节点指标采集（node1/node2）
@@ -74,6 +74,21 @@ Prometheus 抓取以下两个节点的指标：
 - `node1:9100`
 - `node2:9100`
 
+### 监控面板使用说明
+
+1. 打开 Grafana `http://localhost:3000`，使用 `admin/admin` 登录（首次登录会要求改密）。
+2. 进入 Dashboards，打开 `GopherStore Cache`。
+3. 运行压测脚本以产生可视化数据：
+   ```bash
+   bash ./scripts/load_test.sh
+   ```
+4. 在右上角时间范围选择 `Last 5 minutes` 或 `Last 15 minutes`，观察请求速率、命中率、RPC 失败数、p95 耗时等指标。
+
+如需在 Prometheus 手工验证，可在 `http://localhost:9090` 的 Graph 页面执行：
+```promql
+sum(rate(geecache_requests_total[1m]))
+```
+
 ## 数据初始化（本地 sqlite）
 
 ```bash
@@ -84,19 +99,4 @@ go run ./geecache/main/init_db.go
 
 ```bash
 DB_TYPE=sqlite3 DB_DSN=custom.db go run ./geecache/main/init_db.go
-```
-
-## 目录结构
-
-```text
-geerpc/     轻量 RPC 框架
-geecache/   分布式缓存
-geeorm/     简易 ORM
-gee/        简易 Web 框架（施工中）
-```
-
-## 测试
-
-```bash
-go test ./geeorm/session -run .
 ```
