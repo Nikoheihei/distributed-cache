@@ -10,7 +10,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -35,24 +39,55 @@ func advertiseAddr(port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
+func connectDB(driver, dsn string) (*geeorm.Engine, error) {
+	var engine *geeorm.Engine
+	var err error
+
+	// 工业级重试逻辑：尝试 5 次，每次间隔 2 秒
+	for i := 0; i < 5; i++ {
+		engine, err = geeorm.NewEngine(driver, dsn)
+		if err == nil {
+			return engine, nil
+		}
+		log.Printf("数据库连接失败，正在进行第 %d 次重试...", i+1)
+		time.Sleep(2 * time.Second)
+	}
+	return nil, err
+}
+
 func main() {
+
 	var port int
 	var api bool
 	var dbName string // 新增：数据库文件名
+	var metricsPort int
 	flag.IntVar(&port, "port", 8001, "RPC server port")
 	flag.BoolVar(&api, "api", false, "Start a web server?")
 	flag.StringVar(&dbName, "db", "gopher.db", "Database file name") // 新增
+	flag.IntVar(&metricsPort, "metrics-port", 9100, "metrics server port")
 	flag.Parse()
 
-	// 1. 初始化 GeeORM 引擎
-	engine, _ := geeorm.NewEngine("sqlite3", dbName)
-	defer engine.Close()
+	dbType := os.Getenv("DB_TYPE")
+	if dbType == "" {
+		dbType = "sqlite3"
+	}
 
-	// 不再区分 port，大家都确保数据库里有全量数据
-	s := engine.NewSession()
-	_, _ = s.Raw("CREATE TABLE IF NOT EXISTS User(Name TEXT PRIMARY KEY, Score INTEGER);").Exec()
-	_, _ = s.Raw("INSERT OR REPLACE INTO User(Name, Score) VALUES ('Tom', 630);").Exec()
-	_, _ = s.Raw("INSERT OR REPLACE INTO User(Name, Score) VALUES ('Jack', 589);").Exec()
+	dsn := os.Getenv("DB_DSN")
+	if dsn == "" {
+		dsn = "data/common.db"
+	}
+
+	peersEnv := os.Getenv("PEERS")
+	if peersEnv == "" {
+		peersEnv = "8001,8002"
+	}
+
+	engine, err := connectDB(dbType, dsn)
+	if err != nil {
+		return
+	}
+
+	defer engine.Close()
 
 	// 2. 初始化 GeeCache 组，并注入 GeeORM 查询逻辑
 	group := geecache.NewGroup("scores", 2<<10, geecache.GetterFunc(
@@ -68,14 +103,27 @@ func main() {
 		}))
 
 	// 3. 配置分布式节点列表
-	allPorts := []int{8001, 8002}
 	var addrs []string
-	for _, p := range allPorts {
+	for _, pstr := range strings.Split(peersEnv, ",") {
+		pstr = strings.TrimSpace(pstr)
+		if pstr == "" {
+			continue
+		}
+		// 兼容两种格式：port 列表 or 完整地址列表
+		if strings.Contains(pstr, ":") {
+			addrs = append(addrs, pstr)
+			continue
+		}
+		p, err := strconv.Atoi(pstr)
+		if err != nil {
+			log.Printf("Invalid peer port: %s", pstr)
+			continue
+		}
 		addrs = append(addrs, advertiseAddr(p))
 	}
 
 	selfAddr := advertiseAddr(port)
-	log.Printf("Node started | addr=%s | db=%s", selfAddr, dbName)
+	log.Printf("Node started | addr=%s | db=%s | driver=%s", selfAddr, dbName, dbType)
 
 	// 初始化 RPC 池时使用 currentAddr
 	pool := geecache.NewRPCPool(selfAddr)
@@ -86,6 +134,7 @@ func main() {
 	if api {
 		go startWebServer(":9999", group)
 	}
+	go startMetricsServer(bindAddr(metricsPort))
 
 	// 5. 启动内网 RPC 服务
 	bind := bindAddr(port)
@@ -109,6 +158,24 @@ func startWebServer(addr string, g *geecache.Group) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Write(view.ByteSlice())
 	})
+	http.HandleFunc("/metrics", geecache.MetricsHandler)
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 	log.Println("Web Gateway 运行在:", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
+}
+
+func startMetricsServer(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", geecache.MetricsHandler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	log.Println("Metrics Server 运行在:", addr)
+	log.Fatal(http.ListenAndServe(addr, mux))
 }

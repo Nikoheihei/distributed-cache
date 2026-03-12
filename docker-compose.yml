@@ -1,34 +1,79 @@
-version: '3.8'
-
 services:
-  node1:
-    build: .
-    container_name: gopher_node1
+  # 1. 数据库容器
+  db:
+    image: mysql:8.0
+    container_name: gopher_db
     environment:
-      - IN_DOCKER=true
-    command: [ "-port=8001", "-api=true", "-db=data/common.db" ]
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: gopherstore
     volumes:
-        - ./data:/app/data
-    ports:
-      - "9999:9999"
-      - "8001:8001"
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # 仅内部访问数据库；如需本机调试再打开端口映射
+    healthcheck: # 关键：确保 DB 彻底初始化完再启动代码
+      test: [ "CMD", "mysqladmin" ,"ping", "-h", "localhost" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - gopher_net
+  node1:
+    build: .
     depends_on:
-      - node2
+        db:
+          condition: service_healthy
+    environment:
+        - IN_DOCKER=true
+        - DB_TYPE=mysql
+        - DB_DSN=root:root@tcp(db:3306)/gopherstore?charset=utf8mb4&parseTime=True
+        - PEERS=node1:8001,node2:8002
+    ports:
+        - "9999:9999"
+    networks:
+        - gopher_net
+    command: [ "-port=8001", "-api=true", "-metrics-port=9100" ]
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:9999/healthz" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 
   node2:
     build: .
-    container_name: gopher_node2
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       - IN_DOCKER=true
-    command: [ "-port=8002", "-db=data/common.db" ]
-    volumes:
-        - ./data:/app/data # 挂载同一个目录
-    ports:
-      - "8002:8002"
+      - DB_TYPE=mysql
+      - DB_DSN=root:root@tcp(db:3306)/gopherstore?charset=utf8mb4&parseTime=True
+      - PEERS=node1:8001,node2:8002
     networks:
       - gopher_net
+    command: [ "-port=8002", "-metrics-port=9100" ]
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gopher_prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - gopher_net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gopher_grafana
+    volumes:
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - gopher_net
+
 
 networks:
   gopher_net:

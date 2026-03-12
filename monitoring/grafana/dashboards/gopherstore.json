@@ -1,0 +1,66 @@
+{
+  "uid": "gopherstore",
+  "title": "GopherStore Cache",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Requests / sec",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(gopherstore_cache_requests_total[1m]))",
+          "legendFormat": "req/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Hit Ratio",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(gopherstore_cache_hits_total[5m])) / (sum(rate(gopherstore_cache_hits_total[5m])) + sum(rate(gopherstore_cache_misses_total[5m])))",
+          "legendFormat": "hit_ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Peer Errors / sec",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(gopherstore_peer_errors_total[5m]))",
+          "legendFormat": "peer_errors/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Load Latency (p95)",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(gopherstore_cache_load_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    }
+  ]
+}

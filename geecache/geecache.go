@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 // 当缓存未命中，且不从远程节点获取时，采用回调函数。这部分交给用户来实现，否则数据源种类太多+扩展性不好
@@ -62,9 +63,12 @@ func (g *Group) Get(key string) (ByteView, error) {
 	if key == "" {
 		return ByteView{}, fmt.Errorf("key is required")
 	}
+	IncRequests()
 	if v, ok := g.mainCache.get(key); ok {
+		IncHits()
 		return v, nil
 	}
+	IncMisses()
 	return g.load(key)
 }
 func (g *Group) RegisterPeers(peers PeerPicker) {
@@ -75,6 +79,10 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 }
 
 func (g *Group) load(key string) (value ByteView, err error) {
+	start := time.Now()
+	defer func() {
+		ObserveLoad(time.Since(start))
+	}()
 	viewi, err := g.loader.Do(key, func() (interface{}, error) {
 		if g.peers != nil {
 			if peer, ok := g.peers.PickPeer(key); ok {
@@ -108,8 +116,10 @@ func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
 		Key:   key,
 	}
 	res := &pb.Response{}
+	IncPeerRequests()
 	err := peer.Get(req, res)
 	if err != nil {
+		IncPeerErrors()
 		return ByteView{}, err
 	}
 	return ByteView{b: res.Value}, nil

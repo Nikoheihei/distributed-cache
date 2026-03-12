@@ -1,6 +1,15 @@
-# GopherStore
+# GopherStore（v2）
 
 基于 Go 实现的后端基础组件集合，包含轻量 RPC、分布式缓存和简易 ORM，配套本地运行与 Docker Compose 运行方式。
+
+## v2 新增功能
+
+- MySQL 方言与独立数据库容器（V4 形态）
+- 运行期与初始化分离（MySQL 走 `db/init.sql`，sqlite 使用初始化脚本）
+- 可观测性：Prometheus 指标 + Grafana 仪表盘自动导入
+- 多节点指标采集（node1/node2）
+- peers 支持完整地址配置（`node1:8001,node2:8002`）
+- 压测脚本（`scripts/load_test.sh`）
 
 ## 已实现功能
 
@@ -45,6 +54,36 @@ docker compose up --build
 
 ```bash
 curl "http://localhost:9999/api?key=Tom"
+```
+
+说明：
+- 仅 `node1` 暴露对外端口（`9999`），`db` 与 `node2` 只在容器内通信。
+- 节点列表通过环境变量 `PEERS` 配置（例如 `PEERS=8001,8002`）。
+- `PEERS` 支持完整地址（例如 `PEERS=node1:8001,node2:8002`）。
+- MySQL 初始化通过 `db/init.sql` 完成，服务启动不再自动建表/写入数据。
+- 监控指标：`/metrics`（Prometheus 文本格式）。
+
+## 监控
+
+启动后可访问：
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000`（默认用户/密码：`admin` / `admin`）
+Grafana 已自动导入数据源与仪表盘（`GopherStore Cache`）。
+
+Prometheus 抓取以下两个节点的指标：
+- `node1:9100`
+- `node2:9100`
+
+## 数据初始化（本地 sqlite）
+
+```bash
+go run ./geecache/main/init_db.go
+```
+
+如需手动指定数据库：
+
+```bash
+DB_TYPE=sqlite3 DB_DSN=custom.db go run ./geecache/main/init_db.go
 ```
 
 ## 目录结构

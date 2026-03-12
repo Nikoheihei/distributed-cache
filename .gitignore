@@ -1,0 +1,16 @@
+# build artifacts
+/main
+*.exe
+*.out
+
+# local cache
+.gocache/
+
+# IDE / OS
+.idea/
+.DS_Store
+
+# local db files
+*.db
+dbName
+data/
