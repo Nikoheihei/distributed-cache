@@ -12,7 +12,7 @@ COPY . .
 
 # 编译 main.go。注意：因为用了 sqlite (CGO)，必须开启 CGO_ENABLED=1
 RUN go mod download
-RUN CGO_ENABLED=1 GOOS=linux go build -o gopherstore ./geecache/main/main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -o gopherstore ./cmd/gopherstore
 
 # 第二阶段：运行
 FROM alpine:latest

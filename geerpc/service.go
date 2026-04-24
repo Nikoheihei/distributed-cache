@@ -59,6 +59,7 @@ func newService(rcvr interface{}) *service {
 	s.registerMethods()
 	return s
 }
+
 func (s *service) registerMethods() {
 	s.method = make(map[string]*methodType)
 	for i := 0; i < s.typ.NumMethod(); i++ {

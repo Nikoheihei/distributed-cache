@@ -35,22 +35,41 @@ func (s *CacheService) Get(args *geecachepb.Request, reply *geecachepb.Response)
 // 实际上是PeerGetter
 type rpc struct {
 	addr string
+	mu   sync.Mutex
+	c    *geerpc.Client
 }
 
 func (f *rpc) Get(in *geecachepb.Request, out *geecachepb.Response) error {
 	//1.构造请求
 	log.Printf("[GeeCache RPC] call peer=%s group=%s key=%s", f.addr, in.GetGroup(), in.GetKey())
-	client, err := geerpc.Dial("tcp", f.addr)
+
+	client, err := f.getClient()
 	if err != nil {
 		return err
 	}
-	defer client.Close()
-	//2.发起远程调用
+	//2.发起远程调用（超时由 context 控制）
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	return client.Call(ctx, "CacheService.Get", in, out)
 
+}
+
+func (f *rpc) getClient() (*geerpc.Client, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// 复用连接，避免每个 Get 都 Dial + JSON option handshake。
+	if f.c != nil && f.c.IsAvailable() {
+		return f.c, nil
+	}
+
+	c, err := geerpc.Dial("tcp", f.addr)
+	if err != nil {
+		return nil, err
+	}
+	f.c = c
+	return f.c, nil
 }
 
 // 实际上是PeerPicker

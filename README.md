@@ -1,102 +1,123 @@
-# GopherStore（v2）
+# GopherStore
 
-基于 Go 实现的后端基础组件集合，包含轻量 RPC、分布式缓存和简易 ORM，配套本地运行与 Docker Compose 运行方式。
+一个学习向的 Go 后端小项目，把几个常见组件串起来：
+- `geerpc`：轻量 RPC（注册/编解码/超时）
+- `geecache`：分布式缓存（LRU + 一致性哈希 + peer 拉取）
+- `geeorm`：迷你 ORM（schema/clause/session）
+- 可观测性：Prometheus 指标 + Grafana 面板（Docker Compose）
 
-## v2 新增功能
-
-- MySQL 方言与独立数据库容器
-- 运行期与初始化分离（MySQL 走 `db/init.sql`，sqlite 使用初始化脚本）
-- 可观测性：Prometheus 指标 + Grafana 仪表盘自动导入
-- 多节点指标采集（node1/node2）
-- peers 支持完整地址配置（`node1:8001,node2:8002`）
-- 压测脚本（`scripts/load_test.sh`）
-
-## 已实现功能
-
-- 分布式缓存：一致性哈希、节点路由、HTTP/RPC 两种节点通信方式、缓存回源
-- 轻量 RPC：服务注册、请求/响应编解码、客户端/服务端、超时控制
-- 简易 ORM：schema 映射、SQL 子句构造、CRUD、链式查询
-- HTTP 网关：对外提供访问入口
-- Docker 化：支持 Compose 一键拉起多节点
-
-## 模块说明
-
-- `geerpc`：轻量 RPC 框架（服务注册、codec、client/server）。
-- `geecache`：分布式缓存（peer 选择、HTTP/RPC 远程拉取）。
-- `geeorm`：简易 ORM（schema 映射、clause builder、session）。
-- `gee`：简易 Web 框架（施工中）。
-
-## 本地运行
-
-启动两个缓存节点和一个 HTTP 网关：
-
-```bash
-# node1（RPC + API）
-go run ./geecache/main/main.go -port=8001 -api=true -db=./data/common.db
-
-# node2（RPC）
-go run ./geecache/main/main.go -port=8002 -db=./data/common.db
-```
-
-访问：
-
-```bash
-curl "http://localhost:9999/api?key=Tom"
-```
-
-## Docker Compose
+## 快速开始（推荐：Docker Compose）
 
 ```bash
 docker compose up --build
 ```
 
-访问：
+验证：
 
 ```bash
+curl "http://localhost:9999/healthz"
 curl "http://localhost:9999/api?key=Tom"
 ```
 
 说明：
-- 仅 `node1` 暴露对外端口（`9999`），`db` 与 `node2` 只在容器内通信。
-- 节点列表通过环境变量 `PEERS` 配置（例如 `PEERS=8001,8002`）。
-- `PEERS` 支持完整地址（例如 `PEERS=node1:8001,node2:8002`）。
-- MySQL 初始化通过 `db/init.sql` 完成，服务启动不再自动建表/写入数据。
-- 监控指标：`/metrics`（Prometheus 文本格式）。
+- 对外只暴露 `node1` 的 `9999`（HTTP 网关），`node2` 和 `db` 只在容器网络内通信。
+- MySQL 初始化来自 `db/init.sql`。
+- `db` 端口映射为 `3307:3306`（避免占用你本机已有的 `3306`）。
+
+## 本地运行（两节点 + 网关）
+
+默认用 sqlite（通过环境变量可切 MySQL）。
+
+```bash
+# node1（RPC + API 网关）
+DB_TYPE=sqlite3 DB_DSN=./data/common.db PEERS=8001,8002 \
+  go run ./cmd/gopherstore -port=8001 -api=true -metrics-port=9101
+
+# node2（仅 RPC）
+DB_TYPE=sqlite3 DB_DSN=./data/common.db PEERS=8001,8002 \
+  go run ./cmd/gopherstore -port=8002 -metrics-port=9102
+```
+
+## 命令入口（cmd/）
+
+为了避免 “一个目录里多个 main.go” 造成困惑，所有可执行入口统一放在 `cmd/`：
+- `cmd/gopherstore`：节点进程（RPC + 可选 HTTP 网关 + metrics）
+- `cmd/init-db`：初始化 sqlite/MySQL 表和少量演示数据
+- `cmd/mock-data`：往 MySQL 灌入大量 `UserN` 测试数据（可选）
+- `cmd/stress`：压测工具（支持 Zipf 热点分布）
+- `cmd/smoke`：极简并发连通性测试
+
+### 初始化数据（本地 sqlite 或 MySQL）
+
+```bash
+go run ./cmd/init-db
+```
+
+指定数据库：
+
+```bash
+DB_TYPE=sqlite3 DB_DSN=custom.db go run ./cmd/init-db
+DB_TYPE=mysql   DB_DSN="root:root@tcp(127.0.0.1:3307)/gopherstore?parseTime=True" go run ./cmd/init-db
+```
+
+### 灌入大量数据（MySQL）
+
+```bash
+go run ./cmd/mock-data
+```
+
+也可以手动指定：
+
+```bash
+DB_TYPE=mysql DB_DSN="root:root@tcp(127.0.0.1:3307)/gopherstore?charset=utf8mb4&parseTime=True" go run ./cmd/mock-data
+```
+
+### 压测（Zipf 热点）
+
+Zipf 用来模拟类似 80/20 的热点访问分布：
+
+```bash
+KEY_SPACE=10000 ZIPF_S=1.2 ZIPF_V=1 REQ_TIMEOUT=10s TOTAL_TIMEOUT=10m \
+  go run ./cmd/stress
+```
+
+常用环境变量：
+- `CONCURRENCY`：并发 worker 数（默认 50）
+- `PER_WORKER`：每个 worker 请求数（默认 200）
+- `BASE_URL`：目标地址（默认 `http://localhost:9999`）
+
+## 缓存过期策略
+
+当前项目同时支持：
+- LRU 容量淘汰：超过 `maxBytes` 后淘汰最近最少使用的数据
+- 可选 TTL 过期：到期后在读取时判定失效
+
+启动节点时可以配置：
+
+```bash
+go run ./cmd/gopherstore -port=8001 -api=true -cache-ttl=5m
+```
+
+或者通过环境变量：
+
+```bash
+CACHE_TTL=5m go run ./cmd/gopherstore -port=8001 -api=true
+```
 
 ## 监控
 
 启动后可访问：
 - Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`（默认用户/密码：`admin` / `admin`）
-Grafana 已自动导入数据源与仪表盘（`GopherStore Cache`）。
+- Grafana: `http://localhost:3000`（默认 `admin/admin`）
 
-Prometheus 抓取以下两个节点的指标：
-- `node1:9100`
-- `node2:9100`
+如果想快速产生一些曲线数据（更偏功能验证），可以跑：
 
-### 监控面板使用说明
+```bash
+bash ./scripts/load_test.sh
+```
 
-1. 打开 Grafana `http://localhost:3000`，使用 `admin/admin` 登录（首次登录会要求改密）。
-2. 进入 Dashboards，打开 `GopherStore Cache`。
-3. 运行压测脚本以产生可视化数据：
-   ```bash
-   bash ./scripts/load_test.sh
-   ```
-4. 在右上角时间范围选择 `Last 5 minutes` 或 `Last 15 minutes`，观察请求速率、命中率、RPC 失败数、p95 耗时等指标。
+压测/请求后可在 Prometheus 里看：
 
-如需在 Prometheus 手工验证，可在 `http://localhost:9090` 的 Graph 页面执行：
 ```promql
 sum(rate(geecache_requests_total[1m]))
-```
-
-## 数据初始化（本地 sqlite）
-
-```bash
-go run ./geecache/main/init_db.go
-```
-
-如需手动指定数据库：
-
-```bash
-DB_TYPE=sqlite3 DB_DSN=custom.db go run ./geecache/main/init_db.go
 ```

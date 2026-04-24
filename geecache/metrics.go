@@ -68,12 +68,15 @@ func (h *histogram) writeProm(sb *strings.Builder, name, help string) {
 }
 
 type metrics struct {
-	requests   counter
-	hits       counter
-	misses     counter
-	peerReqs   counter
-	peerErrors counter
-	loadHist   *histogram
+	requests      counter
+	hits          counter
+	misses        counter
+	peerReqs      counter
+	peerErrors    counter
+	sourceReqs    counter // 回源计数：请求穿透到DB的次数
+	penetrations  counter // 穿透计数：DB也查不到的次数
+	evictions     counter // 驱逐计数：过期/容量淘汰的次数
+	loadHist      *histogram
 }
 
 var metricsState = &metrics{
@@ -85,6 +88,9 @@ func IncHits()              { metricsState.hits.Inc() }
 func IncMisses()            { metricsState.misses.Inc() }
 func IncPeerRequests()      { metricsState.peerReqs.Inc() }
 func IncPeerErrors()        { metricsState.peerErrors.Inc() }
+func IncSourceRequests()    { metricsState.sourceReqs.Inc() }
+func IncPenetrations()      { metricsState.penetrations.Inc() }
+func IncEvictions()         { metricsState.evictions.Inc() }
 func ObserveLoad(d time.Duration) { metricsState.loadHist.Observe(d) }
 
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +115,18 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	sb.WriteString("# HELP gopherstore_peer_errors_total Peer request errors\n")
 	sb.WriteString("# TYPE gopherstore_peer_errors_total counter\n")
 	sb.WriteString(fmt.Sprintf("gopherstore_peer_errors_total %d\n", metricsState.peerErrors.Get()))
+
+	sb.WriteString("# HELP gopherstore_cache_source_requests_total Source (DB) requests - cache穿透回源次数\n")
+	sb.WriteString("# TYPE gopherstore_cache_source_requests_total counter\n")
+	sb.WriteString(fmt.Sprintf("gopherstore_cache_source_requests_total %d\n", metricsState.sourceReqs.Get()))
+
+	sb.WriteString("# HELP gopherstore_cache_penetrations_total DB miss count - 数据库也查不到的穿透次数\n")
+	sb.WriteString("# TYPE gopherstore_cache_penetrations_total counter\n")
+	sb.WriteString(fmt.Sprintf("gopherstore_cache_penetrations_total %d\n", metricsState.penetrations.Get()))
+
+	sb.WriteString("# HELP gopherstore_cache_evictions_total Cache evictions (expired or LRU)\n")
+	sb.WriteString("# TYPE gopherstore_cache_evictions_total counter\n")
+	sb.WriteString(fmt.Sprintf("gopherstore_cache_evictions_total %d\n", metricsState.evictions.Get()))
 
 	metricsState.loadHist.writeProm(&sb, "gopherstore_cache_load_seconds", "Cache load duration in seconds")
 

@@ -9,6 +9,8 @@ services:
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     # 仅内部访问数据库；如需本机调试再打开端口映射
+    ports:
+      - "3307:3306"
     healthcheck: # 关键：确保 DB 彻底初始化完再启动代码
       test: [ "CMD", "mysqladmin" ,"ping", "-h", "localhost" ]
       interval: 5s

@@ -4,12 +4,13 @@ import (
 	"GopherStore/geecache/consistenthash"
 	pb "GopherStore/geecache/geecachepb"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -114,6 +115,17 @@ var _ PeerPicker = (*HTTPPool)(nil)
 // 创建具体的HTTP客户端类httpGetter，实现PeerGetter接口
 type httpGetter struct {
 	baseURL string //要访问的远程节点的地址
+	client  *http.Client
+}
+
+// 共享的HTTP客户端连接池，避免每次请求创建新连接
+var sharedHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	},
 }
 
 // 向远程节点请求缓存数据
@@ -126,7 +138,12 @@ func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
 		url.QueryEscape(in.GetKey()),
 	)
 
-	res, err := http.Get(u) //获取返回值，并转化为[]byte类型
+	client := h.client
+	if client == nil {
+		client = sharedHTTPClient
+	}
+
+	res, err := client.Get(u) //使用连接池，而非 http.Get
 	if err != nil {
 		return err
 	}
@@ -136,7 +153,7 @@ func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
 		return fmt.Errorf("HTTP status %d", res.StatusCode)
 	}
 
-	bytes, err := ioutil.ReadAll(res.Body)
+	bytes, err := io.ReadAll(res.Body)
 
 	if err != nil {
 		return fmt.Errorf("reading response body: %v", err)

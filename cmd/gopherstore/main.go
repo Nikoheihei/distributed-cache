@@ -61,10 +61,12 @@ func main() {
 	var api bool
 	var dbName string // 新增：数据库文件名
 	var metricsPort int
+	var cacheTTL time.Duration
 	flag.IntVar(&port, "port", 8001, "RPC server port")
 	flag.BoolVar(&api, "api", false, "Start a web server?")
 	flag.StringVar(&dbName, "db", "gopher.db", "Database file name") // 新增
 	flag.IntVar(&metricsPort, "metrics-port", 9100, "metrics server port")
+	flag.DurationVar(&cacheTTL, "cache-ttl", 0, "TTL for local cache entries, 0 means no expiration")
 	flag.Parse()
 
 	dbType := os.Getenv("DB_TYPE")
@@ -101,6 +103,19 @@ func main() {
 			}
 			return []byte(fmt.Sprint(user.Score)), nil
 		}))
+	if cacheTTL <= 0 {
+		if ttlEnv := os.Getenv("CACHE_TTL"); ttlEnv != "" {
+			if parsedTTL, err := time.ParseDuration(ttlEnv); err == nil {
+				cacheTTL = parsedTTL
+			} else {
+				log.Printf("invalid CACHE_TTL=%q: %v", ttlEnv, err)
+			}
+		}
+	}
+	if cacheTTL > 0 {
+		group.SetCacheTTL(cacheTTL)
+		log.Printf("cache TTL enabled: %s", cacheTTL)
+	}
 
 	// 3. 配置分布式节点列表
 	var addrs []string

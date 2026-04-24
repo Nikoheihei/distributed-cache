@@ -15,9 +15,9 @@ type Cache struct {
 // list库里的Value字段是接口，需要自己定义。
 // entry是双向链表节点的数据类型
 // entry包含key是因为在删除map中的记录时需要key。
-type entry struct {
-	key   string
-	value Value //Value是一个接口，为了通用性，允许不同的类型。
+type Entry struct {
+	Key   string
+	Value Value //Value是一个接口，为了通用性，允许不同的类型。
 }
 
 type Value interface {
@@ -38,23 +38,23 @@ func New(maxBytes int64, onEvicted func(string, Value)) *Cache {
 func (c *Cache) Get(key string) (value Value, ok bool) {
 	if ele, ok := c.cache[key]; ok { //这里ele的类型是*list.Element
 		c.ll.MoveToFront(ele)
-		kv := ele.Value.(*entry) //ele.Value的类型是interface{}，获取value需要断言。不是entry因为是ele的类型是指针类型。
-		return kv.value, true    //而且Go 的思维是：我拿到的是一个节点指针，节点里装的是 interface{}，所以我几乎总是存一个结构体指针
+		kv := ele.Value.(*Entry) //ele.Value的类型是interface{}，获取value需要断言。不是entry因为是ele的类型是指针类型。
+		return kv.Value, true    //而且Go 的思维是：我拿到的是一个节点指针，节点里装的是 interface{}，所以我几乎总是存一个结构体指针
 	}
 	return
+}
+
+func (c *Cache) Remove(key string) {
+	if ele, ok := c.cache[key]; ok {
+		c.removeElement(ele)
+	}
 }
 
 // 实现删除功能
 func (c *Cache) RemoveOldest() {
 	ele := c.ll.Back()
 	if ele != nil {
-		kv := ele.Value.(*entry)
-		c.ll.Remove(ele)
-		delete(c.cache, kv.key)
-		c.nBytes -= int64(len(kv.key)) + int64(kv.value.Len())
-		if c.OnEvicted != nil {
-			c.OnEvicted(kv.key, kv.value)
-		}
+		c.removeElement(ele)
 	}
 }
 
@@ -62,11 +62,11 @@ func (c *Cache) RemoveOldest() {
 func (c *Cache) Add(key string, value Value) {
 	if ele, ok := c.cache[key]; ok {
 		c.ll.MoveToFront(ele)
-		kv := ele.Value.(*entry)
-		c.nBytes += int64(value.Len()) - int64(kv.value.Len())
-		kv.value = value
+		kv := ele.Value.(*Entry)
+		c.nBytes += int64(value.Len()) - int64(kv.Value.Len())
+		kv.Value = value
 	} else {
-		ele := c.ll.PushFront(&entry{key, value})
+		ele := c.ll.PushFront(&Entry{key, value})
 		c.cache[key] = ele
 		c.nBytes += int64(len(key) + value.Len())
 	}
@@ -80,4 +80,19 @@ func (c *Cache) Add(key string, value Value) {
 // 一个方便测试加的函数
 func (c *Cache) Len() int {
 	return c.ll.Len()
+}
+
+func (c *Cache) removeElement(ele *list.Element) {
+	kv := ele.Value.(*Entry)
+	c.ll.Remove(ele)
+	delete(c.cache, kv.Key)
+	c.nBytes -= int64(len(kv.Key)) + int64(kv.Value.Len())
+	if c.OnEvicted != nil {
+		c.OnEvicted(kv.Key, kv.Value)
+	}
+}
+
+// Back 返回链表尾节点（最久未访问），供主动过期扫描使用
+func (c *Cache) Back() *list.Element {
+	return c.ll.Back()
 }

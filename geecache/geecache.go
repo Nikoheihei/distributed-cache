@@ -22,6 +22,9 @@ func (f GetterFunc) Get(key string) ([]byte, error) {
 	return f(key)
 }
 
+// 空值缓存的短TTL，防止缓存穿透
+const emptyCacheTTL = 30 * time.Second
+
 // 定义group结构体，一个group表示一个缓存命名空间
 type Group struct {
 	name      string
@@ -78,6 +81,14 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 	g.peers = peers
 }
 
+func (g *Group) SetCacheTTL(ttl time.Duration) {
+	g.mainCache.setTTL(ttl)
+	// 设置TTL后启动主动过期扫描，扫描间隔为TTL的1/4
+	if ttl > 0 {
+		g.mainCache.startEviction(ttl / 4)
+	}
+}
+
 func (g *Group) load(key string) (value ByteView, err error) {
 	start := time.Now()
 	defer func() {
@@ -99,9 +110,15 @@ func (g *Group) load(key string) (value ByteView, err error) {
 	}
 	return
 }
+
 func (g *Group) getlocally(key string) (ByteView, error) {
+	IncSourceRequests()
 	bytes, err := g.getter.Get(key)
 	if err != nil {
+		// 缓存空值防穿透：DB也查不到时，缓存一个空值，设短TTL
+		// 这样同一个key短时间内不会反复穿透到DB
+		IncPenetrations()
+		g.populateCacheWithTTL(key, ByteView{b: []byte{}}, emptyCacheTTL)
 		return ByteView{}, err
 	}
 
@@ -124,6 +141,12 @@ func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
 	}
 	return ByteView{b: res.Value}, nil
 }
+
 func (g *Group) populateCache(key string, value ByteView) {
 	g.mainCache.add(key, value)
+}
+
+// populateCacheWithTTL 使用自定义TTL写入缓存（用于空值缓存短TTL）
+func (g *Group) populateCacheWithTTL(key string, value ByteView, ttl time.Duration) {
+	g.mainCache.addWithTTL(key, value, ttl)
 }
