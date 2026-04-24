@@ -2,9 +2,30 @@
 
 一个学习向的 Go 后端小项目，把几个常见组件串起来：
 - `geerpc`：轻量 RPC（注册/编解码/超时）
-- `geecache`：分布式缓存（LRU + 一致性哈希 + peer 拉取）
+- `geecache`：分布式缓存（LRU + 一致性哈希 + peer 拉取 + 防雪崩/穿透）
 - `geeorm`：迷你 ORM（schema/clause/session）
 - 可观测性：Prometheus 指标 + Grafana 面板（Docker Compose）
+
+## 架构总览
+
+```
+客户端 HTTP GET /api?key=Tom
+    │
+    ▼
+HTTP 网关 (node1:9999) → group.Get("Tom")
+    │
+    ├─ LRU 缓存命中 → 直接返回
+    │
+    └─ 缓存未命中 → Singleflight 合并回源
+         │
+         ├─ 一致性哈希选远程节点 → RPC 调用 peer (CacheService.Get)
+         │   └─ peer 本地缓存命中 → 返回
+         │   └─ peer 本地未命中 → getter 回源查 DB → 写入 peer 缓存 → 返回
+         │
+         └─ 无远程/远程失败 → 本地 getter 回源查 DB
+              ├─ DB 有数据 → 写入本地缓存 → 返回
+              └─ DB 无数据 → 缓存空值(30s短TTL) → 返回错误
+```
 
 ## 快速开始（推荐：Docker Compose）
 
@@ -40,7 +61,7 @@ DB_TYPE=sqlite3 DB_DSN=./data/common.db PEERS=8001,8002 \
 
 ## 命令入口（cmd/）
 
-为了避免 “一个目录里多个 main.go” 造成困惑，所有可执行入口统一放在 `cmd/`：
+为了避免 "一个目录里多个 main.go" 造成困惑，所有可执行入口统一放在 `cmd/`：
 - `cmd/gopherstore`：节点进程（RPC + 可选 HTTP 网关 + metrics）
 - `cmd/init-db`：初始化 sqlite/MySQL 表和少量演示数据
 - `cmd/mock-data`：往 MySQL 灌入大量 `UserN` 测试数据（可选）
@@ -88,9 +109,13 @@ KEY_SPACE=10000 ZIPF_S=1.2 ZIPF_V=1 REQ_TIMEOUT=10s TOTAL_TIMEOUT=10m \
 
 ## 缓存过期策略
 
-当前项目同时支持：
-- LRU 容量淘汰：超过 `maxBytes` 后淘汰最近最少使用的数据
-- 可选 TTL 过期：到期后在读取时判定失效
+当前项目支持三层过期/淘汰机制：
+
+| 机制 | 说明 | 解决问题 |
+|------|------|---------|
+| LRU 容量淘汰 | 超过 `maxBytes` 后淘汰最近最少使用的数据 | 内存容量限制 |
+| TTL 过期（惰性删除） | 读取时检查过期时间，过期则删除并回源 | 数据时效性 |
+| TTL 过期（主动扫描） | 后台 goroutine 每 TTL/4 扫描，清除已过期项 | 惰性删除导致的内存泄漏 |
 
 启动节点时可以配置：
 
@@ -104,6 +129,34 @@ go run ./cmd/gopherstore -port=8001 -api=true -cache-ttl=5m
 CACHE_TTL=5m go run ./cmd/gopherstore -port=8001 -api=true
 ```
 
+## 缓存防护机制
+
+### 缓存雪崩 → TTL Jitter
+
+大量 key 同时过期会导致瞬间请求全部穿透到 DB。`cache.go` 在计算过期时间时加入 ±10% 的随机抖动（jitter），使同一时刻写入的 key 不会同时失效：
+
+```
+expireAt = now + TTL + random(-TTL*10%, +TTL*10%)
+```
+
+### 缓存穿透 → 空值缓存
+
+当 DB 也查不到数据时，同一个 key 会反复穿透到 DB。`geecache.go` 的 `getlocally()` 在 DB 查无结果时，缓存一个空值并设 30s 短 TTL，防止短时间内重复穿透。
+
+### 缓存击穿 → Singleflight
+
+热点 key 过期瞬间，大量并发请求同时回源。`singleflight` 将同一 key 的并发请求合并为一次回源，其余请求共享结果。
+
+## 通信协议
+
+| 场景 | 协议 | 实现 |
+|------|------|------|
+| 外网（客户端→网关） | HTTP | `http.go` HTTPPool + httpGetter |
+| 内网（节点间通信） | 自研 RPC (TCP) | `rpc.go` RPCPool + CacheService |
+| 消息定义 | Protobuf | `geecachepb/geecachepb.proto` |
+
+HTTP 连接使用共享 `http.Client` 连接池（MaxIdleConns=100），RPC 连接通过 `getClient()` 复用，避免每次请求创建新连接。
+
 ## 监控
 
 启动后可访问：
@@ -116,8 +169,29 @@ CACHE_TTL=5m go run ./cmd/gopherstore -port=8001 -api=true
 bash ./scripts/load_test.sh
 ```
 
-压测/请求后可在 Prometheus 里看：
+### 指标说明
+
+| 指标 | 含义 |
+|------|------|
+| `gopherstore_cache_requests_total` | 总请求数 |
+| `gopherstore_cache_hits_total` | 缓存命中数 |
+| `gopherstore_cache_misses_total` | 缓存未命中数 |
+| `gopherstore_cache_source_requests_total` | 回源（穿透到DB）次数 |
+| `gopherstore_cache_penetrations_total` | DB 也查不到的穿透次数 |
+| `gopherstore_cache_evictions_total` | 过期/容量淘汰次数 |
+| `gopherstore_peer_requests_total` | 节点间 RPC 请求数 |
+| `gopherstore_peer_errors_total` | 节点间 RPC 错误数 |
+| `gopherstore_cache_load_seconds` | 回源耗时直方图 |
+
+常用 PromQL：
 
 ```promql
-sum(rate(geecache_requests_total[1m]))
+# 命中率
+sum(rate(gopherstore_cache_hits_total[1m])) / sum(rate(gopherstore_cache_requests_total[1m]))
+
+# 穿透率
+sum(rate(gopherstore_cache_penetrations_total[1m])) / sum(rate(gopherstore_cache_requests_total[1m]))
+
+# 回源 P95 延迟
+histogram_quantile(0.95, rate(gopherstore_cache_load_seconds_bucket[5m]))
 ```
